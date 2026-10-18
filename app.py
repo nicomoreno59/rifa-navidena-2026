@@ -34,9 +34,9 @@ BASE_URL, API_KEY = config()
 SESSION = requests.Session()
 SESSION.headers.update({
     "apikey": API_KEY,
-    "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json",
 })
+
 
 
 def solicitar(metodo, url, **kwargs):

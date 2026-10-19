@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from io import BytesIO
 from PIL import Image, ImageDraw
+from PIL import ImageFont
 
 # ============================================================
 # CONFIGURACIÓN GENERAL
@@ -214,18 +215,18 @@ def generar_imagen_rifa(registros):
         grosor = max(4, int(5 * sx))
 
         if estado == "Vendido":
-            color = (235, 35, 55, 235)
+    fuente = ImageFont.truetype(
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        int(30 * sy)
+    )
 
-            dibujo.line(
-                [(cx - r, cy - r), (cx + r, cy + r)],
-                fill=color,
-                width=grosor
-            )
-            dibujo.line(
-                [(cx + r, cy - r), (cx - r, cy + r)],
-                fill=color,
-                width=grosor
-            )
+    dibujo.text(
+        (cx, cy),
+        "🎄",
+        font=fuente,
+        anchor="mm",
+        embedded_color=True
+    )
 
         elif estado == "Apartado":
             color = (255, 210, 40, 245)

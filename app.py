@@ -1,36 +1,68 @@
-"""Rifa Navideña 2026 — aplicación Streamlit con persistencia Supabase."""
-from pathlib import Path
-import requests
 import streamlit as st
+import requests
+from pathlib import Path
+from datetime import datetime, timezone
+from io import BytesIO
+from PIL import Image, ImageDraw
 
-PRECIO = 20_000
+# ============================================================
+# CONFIGURACIÓN GENERAL
+# ============================================================
+st.set_page_config(
+    page_title="Rifa Navideña 2026",
+    page_icon="🎄",
+    layout="wide"
+)
+
+PRECIO_PUESTO = 20000
 TABLA = "rifa_navidena"
-IMAGEN = Path(__file__).with_name("rifa_original.png")
+IMAGEN = Path("rifa_original.png")
 
-st.set_page_config(page_title="Rifa Navideña 2026", page_icon="🎄", layout="wide")
+ESTADOS = ["Disponible", "Vendido", "Apartado"]
+PAGOS = ["Pendiente", "Pagado"]
+
+# ============================================================
+# ESTILOS
+# ============================================================
 st.markdown("""
 <style>
-.block-container {max-width: 1150px; padding-top: 1.5rem;}
-[data-testid="stMetric"] {background: #f5f7f7; border-radius: 12px; padding: 12px;}
-@media (prefers-color-scheme: dark) {[data-testid="stMetric"] {background: #20252c;}}
-div[data-testid="stButton"] button {min-height: 39px;}
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+}
+.metric-box {
+    padding: 14px 18px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+}
+.small-note {
+    font-size: 0.92rem;
+    opacity: 0.85;
+}
 </style>
 """, unsafe_allow_html=True)
 
-
+# ============================================================
+# CONEXIÓN A SUPABASE
+# ============================================================
 def config():
     try:
         url = str(st.secrets["SUPABASE_URL"]).strip().rstrip("/")
         key = str(st.secrets["SUPABASE_KEY"]).strip()
+
         if not url.startswith("https://") or not key:
-            raise ValueError("URL o clave incorrectas")
+            raise ValueError("SUPABASE_URL o SUPABASE_KEY inválidos.")
+
         return url, key
-    except (KeyError, FileNotFoundError, ValueError):
-        st.error("Falta configurar SUPABASE_URL y SUPABASE_KEY en los Secrets de Streamlit Cloud.")
+
+    except Exception:
+        st.error("Falta configurar SUPABASE_URL y SUPABASE_KEY en los Secrets de Streamlit.")
         st.stop()
 
 
 BASE_URL, API_KEY = config()
+
 SESSION = requests.Session()
 SESSION.headers.update({
     "apikey": API_KEY,
@@ -38,159 +70,460 @@ SESSION.headers.update({
 })
 
 
+def solicitar(metodo, endpoint, params=None, json_data=None):
+    url = f"{BASE_URL}/rest/v1/{endpoint}"
 
-def solicitar(metodo, url, **kwargs):
     try:
-        resp = SESSION.request(metodo, url, timeout=20, **kwargs)
-        resp.raise_for_status()
-        if resp.content:
-            return resp.json()
+        resp = SESSION.request(
+            method=metodo,
+            url=url,
+            params=params,
+            json=json_data,
+            timeout=20
+        )
+
+        if resp.status_code >= 400:
+            detalle = resp.text[:500] if resp.text else "Sin detalle"
+            st.error(f"Error al comunicar con Supabase ({resp.status_code}): {detalle}")
+            st.stop()
+
+        if resp.text:
+            content_type = resp.headers.get("Content-Type", "")
+            if "application/json" in content_type:
+                return resp.json()
+
         return None
+
     except requests.RequestException as err:
-        st.error("No fue posible comunicarse con Supabase. Comprueba los Secrets y los permisos de la tabla.")
-        # No mostramos la respuesta completa porque podría contener detalles sensibles.
+        st.error(f"No fue posible comunicarse con Supabase: {err}")
         st.stop()
+
+
+# ============================================================
+# FUNCIONES DE DATOS
+# ============================================================
+def registro_vacio(numero):
+    return {
+        "numero": numero,
+        "estado": "Disponible",
+        "comprador": "",
+        "telefono": "",
+        "pago": "Pendiente",
+        "valor_pagado": 0,
+        "fecha_actualizacion": None
+    }
 
 
 def listar():
-    datos = solicitar("GET", f"{BASE_URL}/rest/v1/{TABLA}", params={
-        "select": "numero,estado,comprador,telefono,pago,valor_pagado,fecha_actualizacion",
-        "order": "numero.asc",
-        "limit": "100",
-    })
-    if len(datos) != 100:
-        st.error(f"Se encontraron {len(datos)} registros; se esperaban 100. Revisa la tabla y sus permisos en Supabase.")
-        st.stop()
-    return {int(r["numero"]): r for r in datos}
+    datos = solicitar(
+        "GET",
+        TABLA,
+        params={
+            "select": "numero,estado,comprador,telefono,pago,valor_pagado,fecha_actualizacion",
+            "order": "numero.asc"
+        }
+    )
+
+    registros = {}
+
+    for item in datos or []:
+        numero = int(item["numero"])
+        registros[numero] = {
+            "numero": numero,
+            "estado": item.get("estado", "Disponible"),
+            "comprador": item.get("comprador", "") or "",
+            "telefono": item.get("telefono", "") or "",
+            "pago": item.get("pago", "Pendiente"),
+            "valor_pagado": int(item.get("valor_pagado", 0) or 0),
+            "fecha_actualizacion": item.get("fecha_actualizacion")
+        }
+
+    for numero in range(100):
+        if numero not in registros:
+            registros[numero] = registro_vacio(numero)
+
+    return registros
 
 
-def guardar(numero, datos):
-    headers = {"Prefer": "return=representation"}
-    resultado = solicitar("PATCH", f"{BASE_URL}/rest/v1/{TABLA}",
-        params={"numero": f"eq.{numero}", "select": "numero"},
-        json=datos, headers=headers)
-    return bool(resultado)
+def actualizar_numero(numero, estado, comprador, telefono, pago, valor_pagado):
+    numero = int(numero)
+
+    if estado == "Disponible":
+        payload = {
+            "estado": "Disponible",
+            "comprador": "",
+            "telefono": "",
+            "pago": "Pendiente",
+            "valor_pagado": 0,
+            "fecha_actualizacion": datetime.now(timezone.utc).isoformat()
+        }
+    else:
+        payload = {
+            "estado": estado,
+            "comprador": comprador.strip(),
+            "telefono": telefono.strip(),
+            "pago": pago,
+            "valor_pagado": int(valor_pagado),
+            "fecha_actualizacion": datetime.now(timezone.utc).isoformat()
+        }
+
+    solicitar(
+        "PATCH",
+        TABLA,
+        params={"numero": f"eq.{numero}"},
+        json_data=payload
+    )
 
 
-def formato_moneda(valor):
-    return "$" + f"{int(valor):,}".replace(",", ".")
+# ============================================================
+# IMAGEN ACTUALIZADA PARA ESTADOS
+# ============================================================
+def generar_imagen_rifa(registros):
+    if not IMAGEN.exists():
+        return None
+
+    imagen = Image.open(IMAGEN).convert("RGBA")
+    ancho, alto = imagen.size
+
+    capa = Image.new("RGBA", imagen.size, (0, 0, 0, 0))
+    dibujo = ImageDraw.Draw(capa)
+
+    # Coordenadas ajustadas para TU imagen original (720x1037 aprox.)
+    # Se escalan automáticamente si cambia el tamaño del archivo.
+    x_inicial = 160
+    y_inicial = 360
+    salto_x = 49.7
+    salto_y = 55.5
+    radio = 17
+
+    sx = ancho / 720
+    sy = alto / 1037
+
+    for numero in range(100):
+        estado = registros[numero]["estado"]
+
+        if estado == "Disponible":
+            continue
+
+        fila = numero // 10
+        columna = numero % 10
+
+        cx = (x_inicial + columna * salto_x) * sx
+        cy = (y_inicial + fila * salto_y) * sy
+        r = radio * sx
+        grosor = max(4, int(5 * sx))
+
+        if estado == "Vendido":
+            color = (235, 35, 55, 235)
+
+            dibujo.line(
+                [(cx - r, cy - r), (cx + r, cy + r)],
+                fill=color,
+                width=grosor
+            )
+            dibujo.line(
+                [(cx + r, cy - r), (cx - r, cy + r)],
+                fill=color,
+                width=grosor
+            )
+
+        elif estado == "Apartado":
+            color = (255, 210, 40, 245)
+
+            dibujo.ellipse(
+                (cx - r, cy - r, cx + r, cy + r),
+                outline=color,
+                width=grosor
+            )
+
+    resultado = Image.alpha_composite(imagen, capa).convert("RGB")
+
+    buffer = BytesIO()
+    resultado.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
+# ============================================================
+# FUNCIONES DE APOYO
+# ============================================================
+def color_estado(estado):
+    if estado == "Vendido":
+        return "🔴"
+    if estado == "Apartado":
+        return "🟡"
+    return "🟢"
+
+
+def texto_estado_corto(estado):
+    if estado == "Vendido":
+        return "V"
+    if estado == "Apartado":
+        return "A"
+    return "D"
+
+
+def filtrar_registros(registros, filtro, busqueda):
+    resultado = []
+
+    for numero in range(100):
+        reg = registros[numero]
+
+        coincide_filtro = (
+            filtro == "Todos" or reg["estado"] == filtro
+        )
+
+        coincide_busqueda = (
+            not busqueda or f"{numero:02d}" == busqueda.strip()
+        )
+
+        if coincide_filtro and coincide_busqueda:
+            resultado.append(numero)
+
+    return resultado
+
+
+# ============================================================
+# ESTADO DE SESIÓN
+# ============================================================
+if "numero_activo" not in st.session_state:
+    st.session_state.numero_activo = None
+
+
+# ============================================================
+# CARGAR DATOS
+# ============================================================
+registros = listar()
+
+vendidos = sum(1 for r in registros.values() if r["estado"] == "Vendido")
+apartados = sum(1 for r in registros.values() if r["estado"] == "Apartado")
+disponibles = sum(1 for r in registros.values() if r["estado"] == "Disponible")
+recaudado = sum(int(r["valor_pagado"]) for r in registros.values())
+
+pendiente = 0
+for r in registros.values():
+    if r["estado"] in ("Vendido", "Apartado"):
+        pendiente += max(PRECIO_PUESTO - int(r["valor_pagado"]), 0)
+
+imagen_actualizada = generar_imagen_rifa(registros)
+
+# ============================================================
+# ENCABEZADO
+# ============================================================
 st.title("🎄 Rifa Navideña 2026")
-st.caption("Premio: $1.000.000 en efectivo · Puesto: $20.000 · Sorteo: 19 de diciembre de 2026")
+st.markdown(
+    f"**Premio:** `1.000.000 en efectivo`  •  **Puesto:** `{PRECIO_PUESTO:,.0f}`"
+    .replace(",", ".")
+    + " • **Sorteo:** 19 de diciembre de 2026"
+)
 
-with st.expander("🎁 Ver imagen original de la rifa", expanded=False):
-    # Mostramos el archivo original, sin alterar sus píxeles ni su contenido.
-    st.image(str(IMAGEN), caption="Imagen original de la rifa", width=520)
+with st.expander("🎁 Ver imagen original de la rifa"):
+    if IMAGEN.exists():
+        st.image(str(IMAGEN), caption="Imagen original de la rifa", use_container_width=False, width=420)
+    else:
+        st.warning("No se encontró el archivo `rifa_original.png`.")
 
-encabezado_izq, encabezado_der = st.columns([4, 1])
-with encabezado_izq:
-    st.subheader("Administración de números")
-with encabezado_der:
+# ============================================================
+# IMAGEN ACTUALIZADA PARA PUBLICAR
+# ============================================================
+st.subheader("📲 Imagen actualizada para publicar")
+st.caption("🔴 X roja = Vendido  |  🟡 Círculo amarillo = Apartado")
+
+col_img1, col_img2 = st.columns([2, 1])
+
+with col_img1:
+    if imagen_actualizada is not None:
+        st.image(
+            imagen_actualizada,
+            caption="Vista previa de la imagen actualizada",
+            use_container_width=False,
+            width=420
+        )
+    else:
+        st.warning("No se pudo generar la imagen. Verifica que exista `rifa_original.png`.")
+
+with col_img2:
+    if imagen_actualizada is not None:
+        st.download_button(
+            label="📥 Descargar imagen actualizada",
+            data=imagen_actualizada,
+            file_name="Rifa_Navidena_2026_Actualizada.png",
+            mime="image/png",
+            use_container_width=True
+        )
+    st.info("Usa esta imagen para compartir la rifa en estados de WhatsApp.")
+
+st.divider()
+
+# ============================================================
+# ADMINISTRACIÓN
+# ============================================================
+st.subheader("Administración de números")
+
+col_a, col_b, col_c, col_d, col_e = st.columns([1, 1, 1, 1, 0.8])
+
+with col_a:
+    st.metric("🔴 Vendidos", vendidos)
+
+with col_b:
+    st.metric("🟡 Apartados", apartados)
+
+with col_c:
+    st.metric("🟢 Disponibles", disponibles)
+
+with col_d:
+    st.metric("💵 Recaudado", f"${recaudado:,.0f}".replace(",", "."))
+
+with col_e:
     if st.button("🔄 Actualizar", use_container_width=True):
         st.rerun()
 
-registros = listar()
-vendidos = sum(r["estado"] == "Vendido" for r in registros.values())
-apartados = sum(r["estado"] == "Apartado" for r in registros.values())
-disponibles = 100 - vendidos - apartados
-recaudado = sum(int(r.get("valor_pagado") or 0) for r in registros.values())
-pendiente = sum(PRECIO - int(r.get("valor_pagado") or 0)
-                for r in registros.values() if r["estado"] != "Disponible")
+st.caption(
+    f"Pendiente por cobrar en números vendidos o apartados: "
+    f"**${pendiente:,.0f}**. El recaudo corresponde a los abonos registrados."
+    .replace(",", ".")
+)
 
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("🔴 Vendidos", vendidos)
-m2.metric("🟡 Apartados", apartados)
-m3.metric("🟢 Disponibles", disponibles)
-m4.metric("💵 Recaudado", formato_moneda(recaudado))
-st.caption(f"Pendiente por cobrar en números vendidos o apartados: **{formato_moneda(pendiente)}**. El recaudo corresponde a los abonos registrados.")
+# ============================================================
+# FILTROS
+# ============================================================
+st.markdown("### Filtrar")
 
-filtro = st.radio("Filtrar", ["Todos", "Disponible", "Vendido", "Apartado"], horizontal=True)
-busqueda = st.text_input("🔎 Buscar número (00–99)", placeholder="Ejemplo: 07")
-st.caption("🟢 Disponible  ·  🔴 Vendido  ·  🟡 Apartado. Toca un número para editarlo.")
+filtro = st.radio(
+    "Estado",
+    options=["Todos", "Disponible", "Vendido", "Apartado"],
+    horizontal=True,
+    label_visibility="collapsed"
+)
 
-if "seleccion" not in st.session_state:
-    st.session_state.seleccion = None
+busqueda = st.text_input(
+    "🔎 Buscar número (00–99)",
+    placeholder="Ejemplo: 07"
+)
 
-busqueda_num = None
-if busqueda.strip():
-    if not busqueda.strip().isdigit() or not 0 <= int(busqueda.strip()) <= 99:
-        st.warning("Escribe un número entre 00 y 99.")
-    else:
-        busqueda_num = int(busqueda.strip())
+numeros_visibles = filtrar_registros(registros, filtro, busqueda)
 
-# Renderizamos filas de 10 para conservar la distribución 00–99 de la imagen.
-for inicio in range(0, 100, 10):
-    columnas = st.columns(10, gap="small")
-    for i, c in enumerate(columnas):
-        n = inicio + i
-        r = registros[n]
-        oculto = (filtro != "Todos" and r["estado"] != filtro) or (busqueda_num is not None and n != busqueda_num)
-        icono = {"Disponible": "🟢", "Vendido": "🔴", "Apartado": "🟡"}[r["estado"]]
-        with c:
-            if oculto:
-                st.write(" ")
-            else:
-                if st.button(f"{icono} {n:02d}", key=f"n{n}", use_container_width=True):
-                    st.session_state.seleccion = n
-                    st.rerun()
+st.caption("🟢 Disponible · 🔴 Vendido · 🟡 Apartado. Toca un número para editarlo.")
 
-if busqueda_num is not None and st.session_state.seleccion is None:
-    if st.button(f"Editar número {busqueda_num:02d}"):
-        st.session_state.seleccion = busqueda_num
+# ============================================================
+# TABLERO 00 - 99
+# ============================================================
+columnas = st.columns(10)
+contador_col = 0
+
+for numero in numeros_visibles:
+    reg = registros[numero]
+    emoji = color_estado(reg["estado"])
+
+    etiqueta = f"{emoji} {numero:02d}"
+
+    with columnas[contador_col]:
+        if st.button(etiqueta, key=f"btn_{numero}", use_container_width=True):
+            st.session_state.numero_activo = numero
+            st.rerun()
+
+    contador_col += 1
+    if contador_col == 10:
+        columnas = st.columns(10)
+        contador_col = 0
+
+# ============================================================
+# FORMULARIO DE EDICIÓN
+# ============================================================
+if st.session_state.numero_activo is not None:
+    numero = st.session_state.numero_activo
+    reg = registros[numero]
+
+    st.markdown("---")
+    st.subheader(f"📝 Número {numero:02d}")
+
+    with st.form(f"form_numero_{numero}"):
+        estado = st.selectbox(
+            "Estado",
+            options=ESTADOS,
+            index=ESTADOS.index(reg["estado"])
+        )
+
+        comprador = st.text_input(
+            "Nombre del comprador",
+            value=reg["comprador"]
+        )
+
+        telefono = st.text_input(
+            "Teléfono (opcional)",
+            value=reg["telefono"]
+        )
+
+        pago = st.selectbox(
+            "Estado del pago",
+            options=PAGOS,
+            index=PAGOS.index(reg["pago"]) if reg["pago"] in PAGOS else 0
+        )
+
+        valor_pagado = st.number_input(
+            "Valor abonado (COP)",
+            min_value=0,
+            max_value=PRECIO_PUESTO,
+            step=1000,
+            value=int(reg["valor_pagado"])
+        )
+
+        st.caption("Si marcas el número como Disponible, se borrarán comprador, teléfono y pago.")
+
+        col_g1, col_g2, col_g3 = st.columns(3)
+
+        guardar = col_g1.form_submit_button("💾 Guardar cambios", use_container_width=True)
+        liberar = col_g2.form_submit_button("♻️ Liberar número", use_container_width=True)
+        cerrar = col_g3.form_submit_button("✖️ Cerrar", use_container_width=True)
+
+    if cerrar:
+        st.session_state.numero_activo = None
         st.rerun()
 
-seleccion = st.session_state.seleccion
-if seleccion is not None:
-    r = registros[seleccion]
-    st.divider()
-    st.subheader(f"📝 Número {seleccion:02d}")
-    with st.form(f"editar_{seleccion}"):
-        estado = st.selectbox("Estado", ["Disponible", "Vendido", "Apartado"],
-                              index=["Disponible", "Vendido", "Apartado"].index(r["estado"]))
-        comprador = st.text_input("Nombre del comprador", value=r.get("comprador") or "", max_chars=120)
-        telefono = st.text_input("Teléfono (opcional)", value=r.get("telefono") or "", max_chars=30)
-        pago = st.selectbox("Estado del pago", ["Pendiente", "Pagado"],
-                            index=["Pendiente", "Pagado"].index(r.get("pago") or "Pendiente"))
-        valor = st.number_input("Valor abonado (COP)", min_value=0, max_value=PRECIO, step=1000,
-                                value=int(r.get("valor_pagado") or 0))
-        st.caption("Para marcar un número como disponible, se eliminarán sus datos de comprador y pago.")
-        aceptar = st.form_submit_button("💾 Guardar cambios", type="primary", use_container_width=True)
-    if aceptar:
-        if estado != "Disponible" and not comprador.strip():
-            st.error("Introduce el nombre del comprador para vender o apartar un número.")
-        elif estado != "Disponible" and pago == "Pagado" and valor != PRECIO:
-            st.error("Si el pago está marcado como Pagado, el valor abonado debe ser $20.000.")
-        elif estado != "Disponible" and pago == "Pendiente" and valor == PRECIO:
-            st.error("Si ya pagó los $20.000, selecciona Pagado.")
+    if liberar:
+        actualizar_numero(numero, "Disponible", "", "", "Pendiente", 0)
+        st.success(f"El número {numero:02d} volvió a estar disponible.")
+        st.session_state.numero_activo = None
+        st.rerun()
+
+    if guardar:
+        if estado in ("Vendido", "Apartado") and not comprador.strip():
+            st.warning("Debes escribir al menos el nombre del comprador.")
         else:
-            if estado == "Disponible":
-                nuevo = {"estado": "Disponible", "comprador": "", "telefono": "", "pago": "Pendiente", "valor_pagado": 0}
-            else:
-                nuevo = {"estado": estado, "comprador": comprador.strip(), "telefono": telefono.strip(),
-                         "pago": pago, "valor_pagado": int(valor)}
-            from datetime import datetime, timezone
-            nuevo["fecha_actualizacion"] = datetime.now(timezone.utc).isoformat()
-            if guardar(seleccion, nuevo):
-                st.session_state.seleccion = None
-                st.toast(f"Número {seleccion:02d} guardado correctamente", icon="✅")
-                st.rerun()
-            else:
-                st.error("Supabase no actualizó este registro.")
-    if st.button("Cerrar edición"):
-        st.session_state.seleccion = None
-        st.rerun()
+            actualizar_numero(numero, estado, comprador, telefono, pago, valor_pagado)
+            st.success(f"Se guardó correctamente el número {numero:02d}.")
+            st.session_state.numero_activo = numero
+            st.rerun()
 
+# ============================================================
+# RESUMEN DE NÚMEROS REGISTRADOS
+# ============================================================
+st.markdown("---")
 with st.expander("📋 Resumen de números registrados"):
-    import pandas as pd
-    filas = [{"Número": f"{n:02d}", "Estado": r["estado"], "Comprador": r.get("comprador", ""),
-              "Teléfono": r.get("telefono", ""), "Pago": r.get("pago", "Pendiente"),
-              "Abonado": formato_moneda(r.get("valor_pagado") or 0)}
-             for n, r in registros.items() if r["estado"] != "Disponible"]
-    if filas:
-        st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True)
-    else:
-        st.info("Todavía no hay números vendidos ni apartados.")
+    registrados = [
+        r for r in registros.values()
+        if r["estado"] in ("Vendido", "Apartado")
+    ]
 
-st.divider()
-st.caption("Los cambios se guardan en Supabase. Usa Actualizar para ver cambios hechos desde otros dispositivos. ⚠️ Sin contraseña, cualquier persona con el enlace de esta página podrá consultar y modificar la información: comparte el enlace solo con personas de confianza.")
+    if not registrados:
+        st.info("Todavía no hay números vendidos ni apartados.")
+    else:
+        for r in registrados:
+            numero_txt = f"{r['numero']:02d}"
+            estado_txt = r["estado"]
+            comprador_txt = r["comprador"] or "Sin nombre"
+            telefono_txt = r["telefono"] or "Sin teléfono"
+            pago_txt = r["pago"]
+            valor_txt = f"${int(r['valor_pagado']):,}".replace(",", ".")
+
+            st.write(
+                f"**{numero_txt}** · {estado_txt} · {comprador_txt} · "
+                f"{telefono_txt} · {pago_txt} · {valor_txt}"
+            )
+
+st.markdown("---")
+st.caption(
+    "Los cambios se guardan en Supabase. Usa Actualizar para ver cambios hechos desde otros dispositivos. "
+    "⚠️ Sin contraseña, cualquier persona con el enlace de esta página podrá consultar y modificar la información: "
+    "comparte el enlace solo con personas de confianza."
+)

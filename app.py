@@ -1,14 +1,18 @@
 
 import streamlit as st
 import requests
+import base64
+
 from pathlib import Path
 from datetime import datetime, timezone
 from io import BytesIO
 from PIL import Image, ImageDraw
 
+
 # ============================================================
 # CONFIGURACIÓN GENERAL
 # ============================================================
+
 st.set_page_config(
     page_title="Rifa Navideña 2026",
     page_icon="🎄",
@@ -16,16 +20,30 @@ st.set_page_config(
 )
 
 PRECIO_PUESTO = 20000
+
 TABLA = "rifa_navidena"
-IMAGEN = Path(__file__).resolve().parent / "rifa_original.png"
 
-# SOLO DOS ESTADOS
-ESTADOS = ["Disponible", "Vendido"]
-PAGOS = ["Pendiente", "Pagado"]
+IMAGEN = (
+    Path(__file__).resolve().parent
+    / "rifa_original.png"
+)
+
+ESTADOS = [
+    "Disponible",
+    "Vendido"
+]
+
+PAGOS = [
+    "Pendiente",
+    "Pagado"
+]
+
 
 # ============================================================
-# ESTILOS - CINCO NÚMEROS POR FILA EN CELULAR
+# ESTILOS
+# CINCO NÚMEROS POR FILA EN CELULAR
 # ============================================================
+
 st.markdown("""
 <style>
 
@@ -34,7 +52,7 @@ st.markdown("""
     padding-bottom: 2rem;
 }
 
-/* Mantener cinco columnas en celular */
+/* Tablero de cinco columnas */
 
 .st-key-tablero_cinco [data-testid="stHorizontalBlock"] {
     display: flex !important;
@@ -59,18 +77,26 @@ st.markdown("""
     min-height: 2.65rem;
     padding: 0.3rem 0.1rem !important;
     white-space: nowrap !important;
-    font-size: clamp(0.68rem, 2.6vw, 0.96rem) !important;
+    font-size: clamp(
+        0.68rem,
+        2.6vw,
+        0.96rem
+    ) !important;
     border-radius: 10px;
 }
 
 </style>
 """, unsafe_allow_html=True)
 
+
 # ============================================================
 # CONEXIÓN A SUPABASE
 # ============================================================
+
 def configurar_supabase():
+
     try:
+
         url = str(
             st.secrets["SUPABASE_URL"]
         ).strip().rstrip("/")
@@ -80,15 +106,24 @@ def configurar_supabase():
         ).strip()
 
         if not url.startswith("https://") or not clave:
-            raise ValueError("Credenciales inválidas")
+
+            raise ValueError(
+                "Credenciales inválidas"
+            )
 
         return url, clave
 
-    except (KeyError, ValueError, FileNotFoundError):
+    except (
+        KeyError,
+        ValueError,
+        FileNotFoundError
+    ):
+
         st.error(
-            "Configura SUPABASE_URL y SUPABASE_KEY "
-            "en los Secrets de Streamlit."
+            "Configura SUPABASE_URL y "
+            "SUPABASE_KEY en Streamlit Secrets."
         )
+
         st.stop()
 
 
@@ -102,12 +137,21 @@ SESSION.headers.update({
 })
 
 
-def solicitar(metodo, params=None, json_data=None):
+def solicitar(
+    metodo,
+    params=None,
+    json_data=None
+):
+
     try:
+
         encabezados = {}
 
         if metodo == "PATCH":
-            encabezados["Prefer"] = "return=representation"
+
+            encabezados["Prefer"] = (
+                "return=representation"
+            )
 
         respuesta = SESSION.request(
             metodo,
@@ -123,13 +167,17 @@ def solicitar(metodo, params=None, json_data=None):
         if (
             respuesta.text
             and "application/json"
-            in respuesta.headers.get("Content-Type", "")
+            in respuesta.headers.get(
+                "Content-Type", ""
+            )
         ):
+
             return respuesta.json()
 
         return None
 
     except requests.HTTPError as error:
+
         codigo = (
             error.response.status_code
             if error.response is not None
@@ -140,19 +188,25 @@ def solicitar(metodo, params=None, json_data=None):
             f"Error de Supabase ({codigo}). "
             "Comprueba los permisos y la conexión."
         )
+
         st.stop()
 
     except requests.RequestException as error:
+
         st.error(
-            f"No fue posible conectarse con Supabase: {error}"
+            "No fue posible conectarse "
+            "con Supabase."
         )
+
         st.stop()
 
 
 # ============================================================
-# FUNCIONES DE LA BASE DE DATOS
+# BASE DE DATOS
 # ============================================================
+
 def registro_vacio(numero):
+
     return {
         "numero": numero,
         "estado": "Disponible",
@@ -164,12 +218,13 @@ def registro_vacio(numero):
 
 
 def listar():
+
     datos = solicitar(
         "GET",
         params={
             "select": (
-                "numero,estado,comprador,telefono,"
-                "pago,valor_pagado"
+                "numero,estado,comprador,"
+                "telefono,pago,valor_pagado"
             ),
             "order": "numero.asc"
         }
@@ -181,25 +236,32 @@ def listar():
     }
 
     for item in datos or []:
+
         numero = int(item["numero"])
 
         if 0 <= numero <= 99:
+
             registros[numero] = {
                 "numero": numero,
                 "estado": (
-                    item.get("estado") or "Disponible"
+                    item.get("estado")
+                    or "Disponible"
                 ),
                 "comprador": (
-                    item.get("comprador") or ""
+                    item.get("comprador")
+                    or ""
                 ),
                 "telefono": (
-                    item.get("telefono") or ""
+                    item.get("telefono")
+                    or ""
                 ),
                 "pago": (
-                    item.get("pago") or "Pendiente"
+                    item.get("pago")
+                    or "Pendiente"
                 ),
                 "valor_pagado": int(
-                    item.get("valor_pagado") or 0
+                    item.get("valor_pagado")
+                    or 0
                 )
             }
 
@@ -216,6 +278,7 @@ def actualizar_numero(
 ):
 
     if estado == "Disponible":
+
         comprador = ""
         telefono = ""
         pago = "Pendiente"
@@ -226,9 +289,13 @@ def actualizar_numero(
         "comprador": comprador.strip(),
         "telefono": telefono.strip(),
         "pago": pago,
-        "valor_pagado": int(valor_pagado),
+        "valor_pagado": int(
+            valor_pagado
+        ),
         "fecha_actualizacion": (
-            datetime.now(timezone.utc).isoformat()
+            datetime.now(
+                timezone.utc
+            ).isoformat()
         )
     }
 
@@ -241,25 +308,35 @@ def actualizar_numero(
     )
 
     if not actualizados:
+
         st.error(
-            "Supabase no confirmó la actualización. "
-            "Comprueba que el registro exista."
+            "Supabase no confirmó "
+            "la actualización."
         )
+
         st.stop()
 
 
 # ============================================================
-# DIBUJAR ÁRBOL NAVIDEÑO SOBRE NÚMEROS VENDIDOS
+# DIBUJAR ÁRBOL NAVIDEÑO
 # ============================================================
-def dibujar_arbol(dibujo, cx, cy, escala=1):
+
+def dibujar_arbol(
+    dibujo,
+    cx,
+    cy,
+    escala=1
+):
 
     def punto(x, y):
+
         return (
             round(cx + x * escala),
             round(cy + y * escala)
         )
 
     # Contorno blanco
+
     dibujo.polygon(
         [
             punto(0, -20),
@@ -274,6 +351,7 @@ def dibujar_arbol(dibujo, cx, cy, escala=1):
     )
 
     # Tronco
+
     dibujo.rectangle(
         [
             punto(-4, 8),
@@ -283,6 +361,7 @@ def dibujar_arbol(dibujo, cx, cy, escala=1):
     )
 
     # Parte inferior
+
     dibujo.polygon(
         [
             punto(0, -5),
@@ -293,6 +372,7 @@ def dibujar_arbol(dibujo, cx, cy, escala=1):
     )
 
     # Parte central
+
     dibujo.polygon(
         [
             punto(0, -12),
@@ -303,6 +383,7 @@ def dibujar_arbol(dibujo, cx, cy, escala=1):
     )
 
     # Parte superior
+
     dibujo.polygon(
         [
             punto(0, -19),
@@ -312,7 +393,8 @@ def dibujar_arbol(dibujo, cx, cy, escala=1):
         fill=(0, 174, 66, 255)
     )
 
-    # Estrella
+    # Estrella dorada
+
     dibujo.polygon(
         [
             punto(0, -24),
@@ -330,6 +412,7 @@ def dibujar_arbol(dibujo, cx, cy, escala=1):
     )
 
     # Adornos
+
     adornos = [
         (-5, -2, (255, 55, 55, 255)),
         (5, 1, (255, 218, 0, 255)),
@@ -358,11 +441,13 @@ def dibujar_arbol(dibujo, cx, cy, escala=1):
 
 
 # ============================================================
-# GENERAR IMAGEN ACTUALIZADA PARA WHATSAPP
+# GENERAR IMAGEN ACTUALIZADA
 # ============================================================
+
 def generar_imagen_rifa(registros):
 
     if not IMAGEN.exists():
+
         return None
 
     original = Image.open(
@@ -379,18 +464,26 @@ def generar_imagen_rifa(registros):
 
     dibujo = ImageDraw.Draw(capa)
 
+    # Coordenadas para la imagen original
+    # de referencia 720 x 1037.
+
     sx = ancho / 720
     sy = alto / 1037
 
     for numero in range(100):
 
-        estado = registros[numero]["estado"]
+        estado = registros[numero][
+            "estado"
+        ]
 
-        # Solo marcar los números vendidos
         if estado != "Vendido":
+
             continue
 
-        fila, columna = divmod(numero, 10)
+        fila, columna = divmod(
+            numero,
+            10
+        )
 
         cx = (
             162 + columna * 50.4
@@ -425,31 +518,38 @@ def generar_imagen_rifa(registros):
 # ============================================================
 # FUNCIONES AUXILIARES
 # ============================================================
+
 def dinero(valor):
-    return f"${int(valor):,}".replace(",", ".")
+
+    return f"${int(valor):,}".replace(
+        ",", "."
+    )
 
 
 def icono(estado):
+
     if estado == "Vendido":
         return "🎄"
 
     if estado == "Disponible":
         return "🟢"
 
-    # Estado antiguo no clasificado
     return "⚪"
 
 
 # ============================================================
 # ESTADO DE LA INTERFAZ
 # ============================================================
+
 if "numero_activo" not in st.session_state:
+
     st.session_state.numero_activo = None
 
 
 # ============================================================
-# CARGAR INFORMACIÓN
+# CARGAR REGISTROS
 # ============================================================
+
 registros = listar()
 
 vendidos = sum(
@@ -477,7 +577,6 @@ pendiente = sum(
     if r["estado"] == "Vendido"
 )
 
-# Detectar registros antiguos sin modificarlos
 sin_clasificar = [
     r["numero"]
     for r in registros.values()
@@ -488,7 +587,10 @@ sin_clasificar = [
 # ============================================================
 # ENCABEZADO
 # ============================================================
-st.title("🎄 Rifa Navideña 2026")
+
+st.title(
+    "🎄 Rifa Navideña 2026"
+)
 
 st.markdown(
     "**Premio:** $1.000.000 en efectivo · "
@@ -496,9 +598,13 @@ st.markdown(
     "**Sorteo:** 19 de diciembre de 2026"
 )
 
-with st.expander("🎁 Ver imagen original de la rifa"):
+
+with st.expander(
+    "🎁 Ver imagen original de la rifa"
+):
 
     if IMAGEN.exists():
+
         st.image(
             str(IMAGEN),
             width=420
@@ -508,6 +614,7 @@ with st.expander("🎁 Ver imagen original de la rifa"):
 # ============================================================
 # IMAGEN ACTUALIZADA PARA WHATSAPP
 # ============================================================
+
 st.subheader(
     "📲 Imagen actualizada para WhatsApp"
 )
@@ -521,11 +628,16 @@ imagen_actualizada = generar_imagen_rifa(
     registros
 )
 
+
 if imagen_actualizada is not None:
 
     izquierda, derecha = st.columns(
         [2, 1]
     )
+
+    # --------------------------------------------------------
+    # VISTA PREVIA
+    # --------------------------------------------------------
 
     with izquierda:
 
@@ -535,7 +647,13 @@ if imagen_actualizada is not None:
             use_container_width=True
         )
 
+    # --------------------------------------------------------
+    # DESCARGAR Y COMPARTIR
+    # --------------------------------------------------------
+
     with derecha:
+
+        # BOTÓN ORIGINAL DE DESCARGA
 
         st.download_button(
             "📥 Descargar imagen actualizada",
@@ -547,10 +665,161 @@ if imagen_actualizada is not None:
             use_container_width=True
         )
 
+        # ====================================================
+        # NUEVO BOTÓN PARA COMPARTIR DESDE EL CELULAR
+        # ====================================================
+
+        imagen_base64 = base64.b64encode(
+            imagen_actualizada
+        ).decode("ascii")
+
+        html_compartir = f"""
+        <div style="
+            width:100%;
+            font-family:Arial,sans-serif;
+        ">
+
+            <button
+                id="compartir-rifa"
+                type="button"
+                style="
+                    width:100%;
+                    background:#16803c;
+                    color:white;
+                    border:none;
+                    border-radius:10px;
+                    padding:14px 10px;
+                    font-size:15px;
+                    font-weight:600;
+                    cursor:pointer;
+                "
+            >
+                📲 Compartir o guardar en Fotos
+            </button>
+
+            <p
+                id="mensaje-compartir"
+                style="
+                    color:#9ca3af;
+                    font-size:13px;
+                    line-height:1.5;
+                    margin-top:10px;
+                "
+            >
+                Abre las opciones del celular
+                para compartir o guardar la imagen.
+            </p>
+
+        </div>
+
+        <script>
+        (() => {{
+
+            const boton = document.getElementById(
+                "compartir-rifa"
+            );
+
+            const mensaje = document.getElementById(
+                "mensaje-compartir"
+            );
+
+            // Convertir PNG a archivo para compartir
+
+            const datos = atob("{imagen_base64}");
+
+            const bytes = new Uint8Array(
+                datos.length
+            );
+
+            for (
+                let i = 0;
+                i < datos.length;
+                i++
+            ) {{
+                bytes[i] = datos.charCodeAt(i);
+            }}
+
+            const archivo = new File(
+                [bytes],
+                "Rifa_Navidena_2026_Actualizada.png",
+                {{
+                    type: "image/png"
+                }}
+            );
+
+            // Compartir con acción directa del usuario
+
+            boton.addEventListener(
+                "click",
+                async () => {{
+
+                    const compatible = (
+                        typeof navigator.share === "function"
+                        &&
+                        typeof navigator.canShare === "function"
+                        &&
+                        navigator.canShare({{
+                            files: [archivo]
+                        }})
+                    );
+
+                    if (!compatible) {{
+
+                        mensaje.textContent =
+                            "Este navegador no permite " +
+                            "compartir la imagen directamente. " +
+                            "Usa Descargar imagen.";
+
+                        return;
+                    }}
+
+                    try {{
+
+                        await navigator.share({{
+                            files: [archivo]
+                        }});
+
+                        mensaje.textContent =
+                            "Puedes compartir o guardar " +
+                            "la imagen desde el menú.";
+
+                    }} catch (error) {{
+
+                        if (
+                            error.name === "AbortError"
+                        ) {{
+                            return;
+                        }}
+
+                        mensaje.textContent =
+                            "No se pudo abrir el menú. " +
+                            "Usa Descargar imagen.";
+
+                    }}
+
+                }}
+            );
+
+        }})();
+        </script>
+        """
+
+        st.html(
+            html_compartir,
+            unsafe_allow_javascript=True
+        )
+
+        st.info(
+            "Desde tu celular, toca Compartir "
+            "y busca Guardar imagen, Fotos "
+            "o WhatsApp."
+        )
+
 else:
 
     st.warning(
-        "No se encontró el archivo rifa_original.png."
+        "No se encontró el archivo "
+        "rifa_original.png."
     )
 
 
@@ -560,11 +829,11 @@ st.divider()
 # ============================================================
 # ADMINISTRACIÓN Y ESTADÍSTICAS
 # ============================================================
+
 st.subheader(
     "Administración de números"
 )
 
-# ÚNICAMENTE TRES INDICADORES
 c1, c2, c3 = st.columns(3)
 
 c1.metric(
@@ -591,23 +860,28 @@ if sin_clasificar:
 
     st.warning(
         "Hay números con estados antiguos. "
-        "Selecciona los números marcados con ⚪ "
-        "y actualízalos a Disponible o Vendido: "
+        "Actualízalos a Disponible o Vendido: "
         + ", ".join(
-            f"{n:02d}" for n in sin_clasificar
+            f"{n:02d}"
+            for n in sin_clasificar
         )
     )
+
 
 if st.button(
     "🔄 Actualizar información"
 ):
+
     st.rerun()
 
 
 # ============================================================
 # BUSCADOR Y FILTROS
 # ============================================================
-st.markdown("### 🔎 Buscar números")
+
+st.markdown(
+    "### 🔎 Buscar números"
+)
 
 filtro = st.radio(
     "Filtrar números",
@@ -635,6 +909,7 @@ for numero in range(100):
         filtro != "Todos"
         and registro["estado"] != filtro
     ):
+
         continue
 
     if busqueda:
@@ -643,14 +918,18 @@ for numero in range(100):
             f"{numero:02d}"
             != busqueda.zfill(2)
         ):
+
             continue
 
-    numeros_visibles.append(numero)
+    numeros_visibles.append(
+        numero
+    )
 
 
 # ============================================================
-# TABLERO: CINCO NÚMEROS POR FILA
+# TABLERO DE CINCO NÚMEROS POR FILA
 # ============================================================
+
 st.subheader(
     "🎟️ Números de la rifa"
 )
@@ -658,6 +937,7 @@ st.subheader(
 st.caption(
     "🟢 Disponible · 🎄 Vendido"
 )
+
 
 with st.container(
     key="tablero_cinco"
@@ -711,8 +991,9 @@ with st.container(
 
 
 # ============================================================
-# FORMULARIO DE VENTA
+# FORMULARIO PARA REGISTRAR VENTAS
 # ============================================================
+
 if st.session_state.numero_activo is not None:
 
     numero = st.session_state.numero_activo
@@ -725,7 +1006,6 @@ if st.session_state.numero_activo is not None:
         f"📝 Número {numero:02d}"
     )
 
-    # Evitar errores si existen estados antiguos
     indice_estado = (
         ESTADOS.index(registro["estado"])
         if registro["estado"] in ESTADOS
@@ -794,6 +1074,10 @@ if st.session_state.numero_activo is not None:
             use_container_width=True
         )
 
+    # --------------------------------------------------------
+    # GUARDAR
+    # --------------------------------------------------------
+
     if guardar:
 
         if (
@@ -821,6 +1105,10 @@ if st.session_state.numero_activo is not None:
 
             st.rerun()
 
+    # --------------------------------------------------------
+    # LIBERAR
+    # --------------------------------------------------------
+
     if liberar:
 
         actualizar_numero(
@@ -836,6 +1124,10 @@ if st.session_state.numero_activo is not None:
 
         st.rerun()
 
+    # --------------------------------------------------------
+    # CERRAR
+    # --------------------------------------------------------
+
     if cerrar:
 
         st.session_state.numero_activo = None
@@ -844,8 +1136,9 @@ if st.session_state.numero_activo is not None:
 
 
 # ============================================================
-# RESUMEN DE VENTAS
+# RESUMEN DE COMPRADORES
 # ============================================================
+
 st.divider()
 
 with st.expander(
@@ -878,6 +1171,7 @@ with st.expander(
 # ============================================================
 # INFORMACIÓN FINAL
 # ============================================================
+
 st.divider()
 
 st.caption(
@@ -888,7 +1182,7 @@ st.caption(
 )
 
 st.caption(
-    "⚠️ Sin contraseña, cualquier persona que "
-    "tenga el enlace puede consultar o modificar "
-    "los registros de compradores."
+    "⚠️ Sin contraseña, cualquier persona "
+    "con el enlace puede consultar y "
+    "modificar los registros de compradores."
 )
